@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Save chyld.power's idle timers.
+
+  apply [--screensaver SECONDS] [--lock SECONDS] [--blank MS] [--sleep SECONDS]
+
+--screensaver  writes idle.screensaver in shell.json (0 turns it off).
+--lock   writes idle.lock in shell.json (0 turns the idle lock off).
+--blank  asks lock-explorer to change its own display-off delay, through the
+         command lock-explorer provides. Its files are never touched.
+--sleep  writes `sleep` on chyld.power's entry in shell.json (0 is off).
+
+Everything runs in order in this one process, so the blank change (saved by
+the shell) has landed in shell.json before this script rewrites the file.
+"""
+
+import json
+import os
+import subprocess
+import sys
+import time
+
+SHELL_JSON = os.path.expanduser("~/.config/omarchy/shell.json")
+PLUGIN_ID = "chyld.power"
+LOCK_EXPLORER_ID = "io.github.sirjul1337.lock-explorer"
+DEFAULT_BLANK_MS = 5000
+
+
+def fail(message):
+    print("chyld.power: " + message, file=sys.stderr)
+    sys.exit(1)
+
+
+def parse_args(argv):
+    limits = {"--screensaver": (0, 86400), "--lock": (0, 86400), "--blank": (1000, 3600000), "--sleep": (0, 86400)}
+    values = {}
+    i = 0
+    while i < len(argv):
+        flag = argv[i]
+        if flag not in limits or i + 1 >= len(argv):
+            fail("usage: apply [--screensaver SECONDS] [--lock SECONDS] [--blank MS] [--sleep SECONDS]")
+        text = argv[i + 1]
+        if not text.isdigit():
+            fail(flag + " needs a whole number")
+        value = int(text)
+        low, high = limits[flag]
+        if not low <= value <= high:
+            fail("%s must be between %d and %d" % (flag, low, high))
+        values[flag[2:]] = value
+        i += 2
+    return values
+
+
+def load():
+    with open(SHELL_JSON) as f:
+        config = json.load(f)
+    if not isinstance(config, dict):
+        fail("shell.json is not a JSON object")
+    return config
+
+
+def entry(config, plugin_id):
+    layout = (config.get("bar") or {}).get("layout") or {}
+    for section in ("left", "center", "right", "tray"):
+        for item in layout.get(section) or []:
+            if isinstance(item, dict) and item.get("id") == plugin_id:
+                return item
+    for item in config.get("plugins") or []:
+        if isinstance(item, dict) and item.get("id") == plugin_id:
+            return item
+    return None
+
+
+def save(config):
+    tmp = SHELL_JSON + ".chyld-power.tmp"
+    with open(tmp, "w") as f:
+        f.write(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
+    os.replace(tmp, SHELL_JSON)
+
+
+def set_blank(ms):
+    try:
+        reply = subprocess.run(
+            ["omarchy-shell", "lock", "setBlankDelay", str(ms)],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        fail("could not reach lock-explorer: %s" % e)
+    if reply != "ok":
+        fail("lock-explorer refused the display-off delay (%s)" % (reply or "no reply"))
+
+    # lock-explorer leaves blankMs out of shell.json when it is the default.
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        found = (entry(load(), LOCK_EXPLORER_ID) or {}).get("blankMs", DEFAULT_BLANK_MS)
+        if found == ms:
+            return
+        time.sleep(0.05)
+    fail("lock-explorer did not save the display-off delay")
+
+
+def main():
+    values = parse_args(sys.argv[1:])
+    if "blank" in values:
+        set_blank(values["blank"])
+    if not {"screensaver", "lock", "sleep"} & values.keys():
+        return
+
+    config = load()
+    for key in ("screensaver", "lock"):
+        if key in values:
+            idle = config.get("idle")
+            if not isinstance(idle, dict):
+                idle = config["idle"] = {}
+            idle[key] = values[key]
+    if "sleep" in values:
+        own = entry(config, PLUGIN_ID)
+        if own is None:
+            plugins = config.get("plugins")
+            if not isinstance(plugins, list):
+                plugins = config["plugins"] = []
+            own = {"id": PLUGIN_ID}
+            plugins.append(own)
+        own["sleep"] = values["sleep"]
+    save(config)
+
+
+if __name__ == "__main__":
+    main()

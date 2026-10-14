@@ -1,0 +1,38 @@
+#!/bin/bash
+# Suspend after the idle-sleep timeout, unless Omarchy says not to.
+#
+#   idle-sleep [--dry-run]
+#
+# Skips when Stay Awake is on, or when suspend is turned off in the system
+# menu (omarchy toggle suspend). --dry-run records what it would have done in
+# $XDG_RUNTIME_DIR/chyld-power/last-idle-sleep instead of suspending.
+# Omarchy locks the session itself before every suspend.
+
+log_dir="${XDG_RUNTIME_DIR:-/tmp}/chyld-power"
+
+result() {
+  echo "chyld.power idle-sleep: $1"
+  mkdir -p "$log_dir" && printf '%s %s\n' "$(date -Is)" "$1" >"$log_dir/last-idle-sleep"
+}
+
+dry_run=false
+[[ $1 == --dry-run ]] && dry_run=true
+
+stay_awake=$(omarchy-shell idle status 2>/dev/null | jq -r '.stayAwake // false' 2>/dev/null)
+if [[ $stay_awake == true ]]; then
+  result "skipped: stay awake is on"
+  exit 0
+fi
+
+if omarchy-toggle-enabled suspend-off; then
+  result "skipped: suspend is turned off"
+  exit 0
+fi
+
+if $dry_run; then
+  result "dry run: would suspend"
+  exit 0
+fi
+
+result "suspending"
+exec systemctl suspend

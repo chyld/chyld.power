@@ -1,0 +1,36 @@
+#!/bin/bash
+# Restart the shell's idle monitor after idle.lock or idle.screensaver changes.
+#
+#   rearm-idle LOCK SCREENSAVER
+#
+# Quickshell's IdleMonitor stops reporting idle once its timeout changes, so
+# the stock idle service never locks after the timer is edited until the shell
+# restarts. Switching the monitor off and on builds it again with the new
+# timeout. The shell's idle disable/enable (Stay Awake) does that switch.
+
+lock=$1
+screensaver=$2
+
+status() { omarchy-shell idle status 2>/dev/null; }
+
+# Wait for the shell to pick up the new values from shell.json first.
+for _ in $(seq 60); do
+  current=$(status | jq -r '"\(.lock) \(.screensaver) \(.stayAwake)"' 2>/dev/null)
+  [[ $current == "$lock $screensaver "* ]] && break
+  sleep 0.05
+done
+
+if [[ $current != "$lock $screensaver "* ]]; then
+  echo "chyld.power rearm-idle: shell did not pick up lock=$lock screensaver=$screensaver"
+  exit 1
+fi
+
+# With Stay Awake on the monitor is already off; it is rebuilt when turned back on.
+if [[ $current == *" true" ]]; then
+  echo "chyld.power rearm-idle: stay awake is on, nothing to do"
+  exit 0
+fi
+
+omarchy-shell idle disable >/dev/null
+omarchy-shell idle enable >/dev/null
+echo "chyld.power rearm-idle: idle monitor rebuilt for lock=$lock screensaver=$screensaver"

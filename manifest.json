@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "chyld.power",
+  "name": "Power",
+  "version": "0.1.0",
+  "author": "Chyld Medford",
+  "license": "MIT",
+  "description": "Lock, sleep, reboot and shut down from the bar, plus the idle sequence: lock, then display off, then sleep.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Power",
+    "description": "Power actions and idle timers",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
