@@ -3,34 +3,65 @@
 #
 #   rearm-idle LOCK SCREENSAVER
 #
-# Quickshell's IdleMonitor stops reporting idle once its timeout changes, so
-# the stock idle service never locks after the timer is edited until the shell
-# restarts. Switching the monitor off and on builds it again with the new
-# timeout. The shell's idle disable/enable (Stay Awake) does that switch.
+# Quickshell's IdleMonitor stops reporting idle once its timeout changes
+# (omarchy#8038), so the stock idle service never locks after the timer is
+# edited until the shell restarts. Switching the monitor off and on builds it
+# again with the new timeout. The shell offers no switch for that other than
+# idle disable/enable, which is the Stay Awake control: it is persisted, and
+# it ends an idle cycle in progress. So this checks every reply, puts Stay
+# Awake back off if it is interrupted half way, and fails loudly otherwise.
+#
+# Exit status: 0 rebuilt (or nothing to do), 1 failed.
 
 lock=$1
 screensaver=$2
+pulsed=false
 
 status() { omarchy-shell idle status 2>/dev/null; }
+stay_awake() { status | jq -er '.stayAwake | if type == "boolean" then tostring else error end' 2>/dev/null; }
 
-# Wait for the shell to pick up the new values from shell.json first.
-for _ in $(seq 60); do
+fail() {
+  echo "chyld.power rearm-idle: $1" >&2
+  exit 1
+}
+
+# Turns Stay Awake back off, checking that it took.
+enable() {
+  local _
+  for _ in 1 2 3; do
+    [[ $(omarchy-shell idle enable 2>/dev/null) == enabled ]] && sleep 0.1 && [[ $(stay_awake) == false ]] && return 0
+    sleep 0.2
+  done
+  return 1
+}
+
+# A pulse cut short by a signal must not leave Stay Awake on.
+restore() {
+  $pulsed || return
+  pulsed=false
+  enable || echo "chyld.power rearm-idle: Stay Awake may have been left on; turn it off from the bar" >&2
+}
+trap restore EXIT
+trap 'exit 1' INT TERM HUP
+
+# Wait up to three seconds for the shell to pick up the new values.
+deadline=$((SECONDS + 3))
+while :; do
   current=$(status | jq -r '"\(.lock) \(.screensaver) \(.stayAwake)"' 2>/dev/null)
   [[ $current == "$lock $screensaver "* ]] && break
+  ((SECONDS >= deadline)) && fail "shell did not pick up lock=$lock screensaver=$screensaver"
   sleep 0.05
 done
 
-if [[ $current != "$lock $screensaver "* ]]; then
-  echo "chyld.power rearm-idle: shell did not pick up lock=$lock screensaver=$screensaver"
-  exit 1
-fi
-
 # With Stay Awake on the monitor is already off; it is rebuilt when turned back on.
-if [[ $current == *" true" ]]; then
-  echo "chyld.power rearm-idle: stay awake is on, nothing to do"
-  exit 0
-fi
+case $current in
+  *" true") echo "chyld.power rearm-idle: stay awake is on, nothing to do"; exit 0 ;;
+  *" false") ;;
+  *) fail "could not read Stay Awake from the shell's idle status" ;;
+esac
 
-omarchy-shell idle disable >/dev/null
-omarchy-shell idle enable >/dev/null
+pulsed=true
+[[ $(omarchy-shell idle disable 2>/dev/null) == disabled ]] || fail "idle disable was refused"
+enable || fail "idle enable did not take; Stay Awake may be left on"
+pulsed=false
 echo "chyld.power rearm-idle: idle monitor rebuilt for lock=$lock screensaver=$screensaver"

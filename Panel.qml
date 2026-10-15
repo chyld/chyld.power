@@ -19,7 +19,18 @@ Panel {
   property var config: Model.parseConfig("")
   property string errorMessage: ""
   property string confirmAction: ""
+  // Timer changes not yet seen in shell.json: sent to bin/apply, and waiting
+  // behind it. Every pick is measured against these on top of the file, so a
+  // quick second change never undoes the first one's ordering.
+  property var sentArgs: null
   property var queuedArgs: null
+  readonly property var timers: Object.assign({
+    screensaver: root.config.screensaver,
+    lock: root.config.lock,
+    blankMs: root.config.blankMs,
+    sleep: root.config.sleep,
+    keepDisplayOn: root.config.keepDisplayOn
+  }, root.sentArgs || {}, root.queuedArgs || {})
 
   readonly property color fg: root.bar ? root.bar.foreground : Color.foreground
   readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
@@ -77,35 +88,28 @@ Panel {
       return
     }
     root.queuedArgs = null
+    if (Object.keys(merged).length === 0) return
+    root.sentArgs = Object.assign({}, root.sentArgs || {}, merged)
+    var flags = { screensaver: "--screensaver", lock: "--lock", blankMs: "--blank", sleep: "--sleep" }
     var command = ["python3", root.applyScript]
-    for (var key in merged) command.push("--" + key, String(merged[key]))
+    for (var key in merged) command.push(flags[key], String(merged[key]))
     root.errorMessage = ""
     applyProcess.command = command
     applyProcess.running = true
   }
 
-  function pickScreensaver(seconds) {
-    apply({ screensaver: Model.snapScreensaver(seconds, root.config.lock) })
-  }
-
-  function pickLock(seconds) {
-    var args = { lock: seconds }
-    var screensaver = Model.snapScreensaver(root.config.screensaver, seconds)
-    if (screensaver !== root.config.screensaver) args.screensaver = screensaver
-    var sleep = Model.snapSleep(root.config.sleep, seconds, root.config.blankMs)
-    if (sleep !== root.config.sleep) args.sleep = sleep
-    apply(args)
-  }
-
-  function pickBlank(ms) {
-    var args = { blank: ms }
-    var sleep = Model.snapSleep(root.config.sleep, root.config.lock, ms)
-    if (sleep !== root.config.sleep) args.sleep = sleep
-    apply(args)
-  }
-
-  function pickSleep(seconds) {
-    apply({ sleep: Model.snapSleep(seconds, root.config.lock, root.config.blankMs) })
+  // Set one timer, let Model.normalize keep the order, and save whatever moved.
+  function pick(key, value) {
+    var current = root.timers
+    var proposed = Object.assign({}, current)
+    proposed[key] = value
+    var next = Model.normalize(proposed)
+    var args = {}
+    var keys = ["screensaver", "lock", "blankMs", "sleep"]
+    for (var i = 0; i < keys.length; i++) {
+      if (next[keys[i]] !== current[keys[i]]) args[keys[i]] = next[keys[i]]
+    }
+    if (Object.keys(args).length > 0) apply(args)
   }
 
   FileView {
@@ -116,6 +120,8 @@ Panel {
     onLoaded: {
       var next = Model.parseConfig(text())
       if (next.valid) root.config = next
+      // What was sent has landed (or failed and is shown as an error).
+      if (!applyProcess.running && !root.queuedArgs) root.sentArgs = null
     }
     onFileChanged: reload()
   }
@@ -315,36 +321,38 @@ Panel {
           title: "1  Screensaver"
           caption: "After this long without input, always before the lock"
           options: Model.SCREENSAVER_OPTIONS
-          current: root.config.screensaver
+          current: root.timers.screensaver
           format: Model.formatSeconds
-          onPicked: function(v) { root.pickScreensaver(v) }
+          onPicked: function(v) { root.pick("screensaver", v) }
         }
 
         TimerRow {
           title: "2  Lock"
           caption: "After this long without input"
           options: Model.LOCK_OPTIONS
-          current: root.config.lock
+          current: root.timers.lock
           format: Model.formatSeconds
-          onPicked: function(v) { root.pickLock(v) }
+          onPicked: function(v) { root.pick("lock", v) }
         }
 
         TimerRow {
           title: "3  Display off"
-          caption: "After the screen locks (set in lock-explorer)"
+          caption: root.timers.keepDisplayOn
+            ? "Kept on: lock-explorer's Keep display on is set"
+            : "After the screen locks (set in lock-explorer)"
           options: Model.BLANK_OPTIONS
-          current: root.config.blankMs
+          current: root.timers.blankMs
           format: Model.formatMs
-          onPicked: function(v) { root.pickBlank(v) }
+          onPicked: function(v) { root.pick("blankMs", v) }
         }
 
         TimerRow {
           title: "4  Sleep"
           caption: "After this long without input, always after display off"
           options: Model.SLEEP_OPTIONS
-          current: root.config.sleep
+          current: root.timers.sleep
           format: Model.formatSeconds
-          onPicked: function(v) { root.pickSleep(v) }
+          onPicked: function(v) { root.pick("sleep", v) }
         }
 
         PlainText {

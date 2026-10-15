@@ -11,18 +11,28 @@
 
 Everything runs in order in this one process, so the blank change (saved by
 the shell) has landed in shell.json before this script rewrites the file.
+
+The shell and other plugins write shell.json too, from their own copy, and
+there is no lock they all honour. So the write is compare-and-swap: read the
+file, change it, and just before replacing it check that it still holds what
+was read; if another writer got there first, start again from their version.
+Runs of this script also take a lock, so two of them never interleave.
 """
 
+import fcntl
 import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 SHELL_JSON = os.path.expanduser("~/.config/omarchy/shell.json")
 PLUGIN_ID = "chyld.power"
 LOCK_EXPLORER_ID = "io.github.sirjul1337.lock-explorer"
 DEFAULT_BLANK_MS = 5000
+LOCK_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir(), "chyld-power-apply.lock")
+ATTEMPTS = 5
 
 
 def fail(message):
@@ -50,12 +60,23 @@ def parse_args(argv):
     return values
 
 
-def load():
-    with open(SHELL_JSON) as f:
-        config = json.load(f)
+def read_bytes():
+    with open(SHELL_JSON, "rb") as f:
+        return f.read()
+
+
+def parse(raw):
+    try:
+        config = json.loads(raw)
+    except ValueError as e:
+        fail("shell.json is not valid JSON: %s" % e)
     if not isinstance(config, dict):
         fail("shell.json is not a JSON object")
     return config
+
+
+def load():
+    return parse(read_bytes())
 
 
 def entry(config, plugin_id):
@@ -70,11 +91,49 @@ def entry(config, plugin_id):
     return None
 
 
-def save(config):
-    tmp = SHELL_JSON + ".chyld-power.tmp"
-    with open(tmp, "w") as f:
-        f.write(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
-    os.replace(tmp, SHELL_JSON)
+def replace_if_unchanged(original, text):
+    """Write text over shell.json unless it no longer holds original."""
+    mode = os.stat(SHELL_JSON).st_mode & 0o7777
+    fd, tmp = tempfile.mkstemp(prefix=".shell.json.chyld-power.", dir=os.path.dirname(SHELL_JSON))
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        if read_bytes() != original:
+            return False
+        os.replace(tmp, SHELL_JSON)
+        tmp = None
+        return True
+    finally:
+        if tmp is not None:
+            os.unlink(tmp)
+
+
+def apply_timers(values):
+    for _ in range(ATTEMPTS):
+        original = read_bytes()
+        config = parse(original)
+        for key in ("screensaver", "lock"):
+            if key in values:
+                idle = config.get("idle")
+                if not isinstance(idle, dict):
+                    idle = config["idle"] = {}
+                idle[key] = values[key]
+        if "sleep" in values:
+            own = entry(config, PLUGIN_ID)
+            if own is None:
+                plugins = config.get("plugins")
+                if not isinstance(plugins, list):
+                    plugins = config["plugins"] = []
+                own = {"id": PLUGIN_ID}
+                plugins.append(own)
+            own["sleep"] = values["sleep"]
+        if replace_if_unchanged(original, json.dumps(config, indent=2, ensure_ascii=False) + "\n"):
+            return
+        time.sleep(0.05)
+    fail("shell.json kept changing while saving; try again")
 
 
 def set_blank(ms):
@@ -100,28 +159,12 @@ def set_blank(ms):
 
 def main():
     values = parse_args(sys.argv[1:])
-    if "blank" in values:
-        set_blank(values["blank"])
-    if not {"screensaver", "lock", "sleep"} & values.keys():
-        return
-
-    config = load()
-    for key in ("screensaver", "lock"):
-        if key in values:
-            idle = config.get("idle")
-            if not isinstance(idle, dict):
-                idle = config["idle"] = {}
-            idle[key] = values[key]
-    if "sleep" in values:
-        own = entry(config, PLUGIN_ID)
-        if own is None:
-            plugins = config.get("plugins")
-            if not isinstance(plugins, list):
-                plugins = config["plugins"] = []
-            own = {"id": PLUGIN_ID}
-            plugins.append(own)
-        own["sleep"] = values["sleep"]
-    save(config)
+    with open(LOCK_FILE, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if "blank" in values:
+            set_blank(values["blank"])
+        if {"screensaver", "lock", "sleep"} & values.keys():
+            apply_timers(values)
 
 
 if __name__ == "__main__":

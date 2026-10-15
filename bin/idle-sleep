@@ -3,36 +3,53 @@
 #
 #   idle-sleep [--dry-run]
 #
-# Skips when Stay Awake is on, or when suspend is turned off in the system
-# menu (omarchy toggle suspend). --dry-run records what it would have done in
-# $XDG_RUNTIME_DIR/chyld-power/last-idle-sleep instead of suspending.
+# Skips when Stay Awake is on, when suspend is turned off in the system menu
+# (omarchy toggle suspend), or when there has been input since the idle
+# monitor fired. Every check fails closed: a check that cannot be made skips
+# the suspend rather than allowing it. --dry-run records what it would have
+# done in $XDG_RUNTIME_DIR/chyld-power/last-idle-sleep instead of suspending.
 # Omarchy locks the session itself before every suspend.
+#
+# Exit status: 0 suspended (or dry run), 2 skipped, 1 suspend failed.
 
 log_dir="${XDG_RUNTIME_DIR:-/tmp}/chyld-power"
+# The flag file omarchy-toggle-enabled checks for `omarchy toggle suspend`.
+suspend_off="$HOME/.local/state/omarchy/toggles/suspend-off"
 
 result() {
   echo "chyld.power idle-sleep: $1"
   mkdir -p "$log_dir" && printf '%s %s\n' "$(date -Is)" "$1" >"$log_dir/last-idle-sleep"
 }
 
+skip() {
+  result "skipped: $1"
+  exit 2
+}
+
 dry_run=false
 [[ $1 == --dry-run ]] && dry_run=true
 
-stay_awake=$(omarchy-shell idle status 2>/dev/null | jq -r '.stayAwake // false' 2>/dev/null)
-if [[ $stay_awake == true ]]; then
-  result "skipped: stay awake is on"
-  exit 0
-fi
+idle_status=$(omarchy-shell idle status 2>/dev/null) || skip "could not read the shell's idle status"
+stay_awake=$(jq -er '.stayAwake | if type == "boolean" then tostring else error end' <<<"$idle_status" 2>/dev/null) ||
+  skip "the shell's idle status has no stayAwake"
+[[ $stay_awake == false ]] || skip "stay awake is on"
 
-if omarchy-toggle-enabled suspend-off; then
-  result "skipped: suspend is turned off"
-  exit 0
-fi
+[[ -e $suspend_off ]] && skip "suspend is turned off"
+
+# Input between the idle report and now cancels the suspend.
+own_status=$(omarchy-shell chyld.power status 2>/dev/null) || skip "could not read chyld.power's status"
+jq -e '.idle == true' <<<"$own_status" >/dev/null 2>&1 || skip "no longer idle"
 
 if $dry_run; then
   result "dry run: would suspend"
   exit 0
 fi
 
-result "suspending"
-exec systemctl suspend
+systemctl suspend
+code=$?
+if ((code == 0)); then
+  result "suspended"
+  exit 0
+fi
+result "suspend failed (systemctl exit $code)"
+exit 1
