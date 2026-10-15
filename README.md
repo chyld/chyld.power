@@ -40,6 +40,13 @@ Timer saves rewrite `shell.json`, which the shell and other plugins also write.
 `bin/apply` takes a lock and only replaces the file if it still holds what it
 read, starting again from the newer version otherwise.
 
+## Flow
+
+![What happens when something triggers: idle steps, buttons, wake](docs/power-flow.png)
+
+Source: `docs/power-flow.dot`; rebuild with
+`dot -Tpng -Gdpi=144 docs/power-flow.dot -o docs/power-flow.png`.
+
 ## Commands sent to the system
 
 What each action actually runs, from the command this plugin (or the shell)

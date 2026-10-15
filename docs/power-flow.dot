@@ -1,0 +1,67 @@
+// Render: dot -Tpng -Gdpi=144 docs/power-flow.dot -o docs/power-flow.png
+digraph power {
+  graph [rankdir=TB, bgcolor="white", fontname="Noto Sans", fontsize=13,
+         nodesep=0.45, ranksep=0.55, pad=0.4, newrank=true,
+         label="chyld.power: what happens when something triggers\nIdle times count from the last input, except display off, which counts from the lock.",
+         labelloc=t, labeljust=l]
+  node  [fontname="Noto Sans", fontsize=12, style="rounded,filled", shape=box,
+         color="#5b6472", fillcolor="#f4f6f8", penwidth=1.2, margin="0.18,0.08"]
+  edge  [fontname="Noto Sans", fontsize=10.5, color="#5b6472", fontcolor="#374151", arrowsize=0.75]
+
+  // ---------------------------------------------------------- states
+  active      [label="Active\n(you are using the machine)", fillcolor="#dcfce7", color="#15803d", penwidth=1.6]
+  screensaver [label="Screensaver\nomarchy-launch-screensaver", fillcolor="#e0f2fe", color="#0369a1"]
+  locked      [label="Locked\nomarchy-system-lock\n(lock screen, display on)", fillcolor="#fef3c7", color="#b45309"]
+  displayoff  [label="Locked, display off\nomarchy-brightness-display off\n(DPMS disable)", fillcolor="#ede9fe", color="#6d28d9"]
+  suspended   [label="Suspended\nsystemctl suspend", fillcolor="#e5e7eb", color="#111827", penwidth=1.6]
+  off         [label="Rebooting / powered off\nsystemctl reboot | poweroff", fillcolor="#fee2e2", color="#b91c1c", penwidth=1.6]
+
+  // ---------------------------------------------------------- idle sleep checks
+  checks   [label="bin/idle-sleep checks\nStay Awake off?\nsuspend not turned off?\nstill idle?", shape=diamond, style=filled,
+            fillcolor="#fff7ed", color="#c2410c", margin="0.05,0.05"]
+  retry    [label="Skipped\nretry every 60 s\nwhile still idle", fillcolor="#fff7ed", color="#c2410c"]
+  sleeplock [label="Lock before sleep\nomarchy-system-sleep-lock\n(waits until the lock is secure)", fillcolor="#fef3c7", color="#b45309"]
+
+  // ---------------------------------------------------------- buttons
+  subgraph cluster_buttons {
+    label="Panel buttons"; fontsize=12; style="rounded,dashed"; color="#9ca3af"
+    b_lock   [label="Lock", shape=box, fillcolor="white"]
+    b_sleep  [label="Sleep", shape=box, fillcolor="white"]
+    b_reboot [label="Reboot / Shut down", shape=box, fillcolor="white"]
+  }
+  confirm  [label="Confirm?\n(Cancel: nothing happens)", shape=diamond, style=filled, fillcolor="white", margin="0.05,0.05"]
+  closeall [label="OSD, close apps (2 s max)\nomarchy-system reboot | shutdown", fillcolor="#fee2e2", color="#b91c1c"]
+
+  // ---------------------------------------------------------- blockers
+  blockers [label="Idle never starts counting while\nan app inhibits idle (video, calls)\nor Stay Awake is on", shape=note,
+            fillcolor="#fefce8", color="#a16207", fontsize=11]
+
+  // ---------------------------------------------------------- idle path
+  active -> screensaver [label=" idle.screensaver\l (shell idle service)\l", color="#0369a1", fontcolor="#0369a1", penwidth=1.4]
+  screensaver -> locked [label=" idle.lock\l", color="#b45309", fontcolor="#b45309", penwidth=1.4]
+  active -> locked      [label=" idle.lock\l (no screensaver)\l", color="#b45309", fontcolor="#b45309", style=dashed]
+  locked -> displayoff  [label=" blankMs after the lock\l (lock-explorer)\l", color="#6d28d9", fontcolor="#6d28d9", penwidth=1.4]
+  displayoff -> checks  [label=" sleep, from the last input\l (chyld.power service)\l", color="#c2410c", fontcolor="#c2410c", penwidth=1.4]
+  checks -> sleeplock   [label=" yes\l", color="#c2410c", fontcolor="#c2410c", penwidth=1.4]
+  checks -> retry       [label=" no / can't tell\l", color="#c2410c", fontcolor="#c2410c", style=dashed]
+  retry -> checks       [label=" 60 s\l", color="#c2410c", fontcolor="#c2410c", style=dashed]
+  sleeplock -> suspended [penwidth=1.4]
+
+  // ---------------------------------------------------------- input / wake
+  screensaver -> active [label=" input\l (cycle cancelled)\l", color="#15803d", fontcolor="#15803d", constraint=false]
+  displayoff -> locked  [label=" input\l (display back on)\l", color="#15803d", fontcolor="#15803d", constraint=false]
+  locked -> active      [label=" unlock\l", color="#15803d", fontcolor="#15803d", constraint=false]
+  suspended -> locked   [label=" wake\l (still locked)\l", color="#15803d", fontcolor="#15803d", constraint=false]
+
+  // ---------------------------------------------------------- buttons
+  b_lock -> locked      [label=" omarchy-system-lock\l"]
+  b_sleep -> sleeplock  [label=" systemctl suspend\l"]
+  b_reboot -> confirm
+  confirm -> closeall   [label=" yes\l"]
+  closeall -> off
+
+  blockers -> active [style=dotted, arrowhead=none, color="#a16207"]
+
+  {rank=same; active; blockers}
+  {rank=same; b_lock; b_sleep; b_reboot}
+}
