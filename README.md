@@ -40,6 +40,27 @@ Timer saves rewrite `shell.json`, which the shell and other plugins also write.
 `bin/apply` takes a lock and only replaces the file if it still holds what it
 read, starting again from the newer version otherwise.
 
+## Commands sent to the system
+
+What each action actually runs, from the command this plugin (or the shell)
+starts down to the command that does the work.
+
+| Action | Started by | Command started | What that runs |
+|---|---|---|---|
+| Lock | Lock button | `omarchy-system-lock` | `omarchy-shell lock lock` (the lock screen), `hyprctl switchxkblayout all 0`, `1password --lock` if 1Password is running, then kills the screensaver (`ttfx`, `org.omarchy.screensaver`) |
+| Lock | idle, after `idle.lock` | the shell's idle service runs `omarchy-system-lock` | same as the button |
+| Sleep | Sleep button | `systemctl suspend` | logind announces `PrepareForSleep`; `omarchy-system-sleep-monitor` (holding a delay inhibitor) runs `omarchy-system-sleep-lock`, which locks and waits for the lock to be secure before the machine sleeps |
+| Sleep | idle, after `sleep` | `bin/idle-sleep` | reads `omarchy-shell idle status`, `~/.local/state/omarchy/toggles/suspend-off` and `omarchy-shell chyld.power status`; if all clear, `systemctl suspend` (locked first, as above) |
+| Reboot | Reboot button, confirmed | `omarchy system reboot` | `systemd-run --user … omarchy-system reboot --execute`: an OSD message, `omarchy-hyprland-window-close-all --wait` (2 s limit), then `systemctl reboot --no-wall` |
+| Shut down | Shut down button, confirmed | `omarchy system shutdown` | as reboot, under `systemd-inhibit --what=sleep:idle:handle-lid-switch`, ending in `systemctl poweroff --no-wall` |
+| Screensaver | idle, after `idle.screensaver` | the shell's idle service runs `bash -lc '[[ $(omarchy-shell lock isLocked) == "true" ]] \|\| omarchy-launch-screensaver'` | opens a terminal of class `org.omarchy.screensaver` on each monitor through `hyprctl dispatch`; does nothing when the screensaver is turned off (`screensaver-off` toggle) |
+| Display off | lock-explorer, `blankMs` after the lock | `omarchy-brightness-keyboard off; omarchy-brightness-display off` | `hyprctl dispatch 'hl.dsp.dpms({ action = "disable" })'`; with Keep display on (or HDMI blank suppression) only the keyboard backlight goes off |
+
+The plugin starts the button commands and `bin/idle-sleep` itself. The
+screensaver, idle lock and display off are run by the shell and lock-explorer;
+the plugin only sets their timers (`shell.json`, and
+`omarchy-shell lock setBlankDelay` for display off).
+
 ## Files
 
 - `BarWidget.qml`, `Panel.qml`: the bar icon and its panel
